@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::net::SocketAddr;
 
 use anyhow::anyhow;
 use bytebuffer::{ByteBuffer, ByteReader};
@@ -88,20 +89,28 @@ pub struct PlayerPosition {
 
 pub struct State {
     levels: HashMap<i32, HashMap<i32, PlayerPosition>>,
+    server_socket: Arc<UdpSocket>,
+    client_to_addr: HashMap<i32, SocketAddr>,
 }
 
 impl State {
-    pub fn new() -> Self {
+    pub fn new(server_socket: Arc<UdpSocket>) -> Self {
         State {
             levels: HashMap::new(),
+            server_socket,
+            client_to_addr: HashMap::new(),
         }
     }
 
-    pub fn left_level(&mut self, user: &i32) {
+    pub fn left_level(&mut self, user: &i32) -> Vec<i32> {
+        // returns users to notify about exit
+        
+        let mut users_in_level = vec![];
         // remove from existing levels, if applicable
         for (level_id, level_players) in self.levels.iter_mut() {
             if level_players.contains_key(user) {
                 level_players.remove(user);
+                users_in_level.extend(level_players.keys().map(|elem| *elem).collect::<Vec<i32>>());
                 debug!("{user} left the level {level_id}");
                 break;
             }
@@ -109,33 +118,58 @@ impl State {
 
         // remove levels with 0 players
         self.levels.retain(|_, v| !v.is_empty());
+
+        users_in_level
+    }
+
+    pub async fn notify_clients(&self, clients: &Vec<i32>, client_left: &i32) -> anyhow::Result<()> {
+        debug!("notifying {} clients that {client_left} left", clients.len());
+        for client_id in clients.iter() {
+            let mut buf = ByteBuffer::new();
+            buf.write_i8(Prefixes::PlayerDisconnect.to_number());
+            buf.write_i32(*client_left);
+            self.send_to(client_id, buf.as_bytes()).await?;
+        }
+        Ok(())
+    }
+    
+    pub async fn send_to(&self, client_id: &i32, data: &[u8]) -> anyhow::Result<usize> {
+        let addr = self.client_to_addr.get(client_id);
+        if addr.is_none() {
+            return Err(anyhow!("Address not found"));
+        }
+
+        let addr = addr.unwrap();
+        Ok(self.server_socket.send_to(data, addr).await?)
     }
 }
 
 pub async fn handle_packet(
     state: Arc<Mutex<State>>,
-    buf: &[u8; 4096],
-    len: usize,
-) -> anyhow::Result<Vec<ByteBuffer>> {
-    let mut bytebuffer = ByteReader::from_bytes(&buf[..len]);
+    buf: &[u8],
+    address: SocketAddr,
+) -> anyhow::Result<()> {
+    let mut bytebuffer = ByteReader::from_bytes(buf);
     let prefix = Prefixes::from_number(bytebuffer.read_i8()?).ok_or(anyhow!("invalid prefix"))?;
 
     let client_id = bytebuffer.read_i32()?;
     let _user_key = bytebuffer.read_u32()?;
 
-    let mut state = state.lock().await;
-
-    let mut out = vec![];
-
     match prefix {
         Prefixes::Disconnect => {
             debug!("remote sent Prefixes::Disconnect");
+            let mut state = state.lock().await;
+            let clients = state.left_level(&client_id);
+            state.notify_clients(&clients, &client_id).await?;
         }
         Prefixes::Hello => {
             debug!("remote sent Prefixes::Hello");
+            let mut state = state.lock().await;
+            state.client_to_addr.insert(client_id, address);
+
             let mut buf = ByteBuffer::new();
             buf.write_i8(Prefixes::AckHello.to_number());
-            out.push(buf);
+            state.send_to(&client_id, buf.as_bytes()).await?;
         }
         Prefixes::Ping => {
             let res = bytebuffer.read_bytes(20);
@@ -143,7 +177,8 @@ pub async fn handle_packet(
                 let mut buf = ByteBuffer::new();
                 buf.write_i8(Prefixes::Ping.to_number());
                 buf.write_i32(0i32); // Online player count, unused
-                out.push(buf);
+                let state = state.lock().await;
+                state.send_to(&client_id, buf.as_bytes()).await?;
             } else {
                 debug!("unhandled, got GetIcon or CreateLobby");
                 // this never happens..?
@@ -154,7 +189,10 @@ pub async fn handle_packet(
             }
         }
         Prefixes::OutsideLevel => {
-            state.left_level(&client_id);
+            debug!("remote sent Prefixes::OutsideLevel");
+            let mut state = state.lock().await;
+            let clients = state.left_level(&client_id);
+            state.notify_clients(&clients, &client_id).await?;
         }
         Prefixes::Message => {
             let p1_xpos = bytebuffer.read_i32()?;
@@ -186,8 +224,11 @@ pub async fn handle_packet(
             let icon_ids = bytebuffer.read_bytes(7)?;
 
             if level_id == -1 {
-                state.left_level(&client_id);
+                let mut state = state.lock().await;
+                let clients = state.left_level(&client_id);
+                state.notify_clients(&clients, &client_id).await?;
             } else {
+                let mut state = state.lock().await;
                 let level = state.levels.entry(level_id).or_insert_with(HashMap::new);
 
                 let pos_entry = PlayerPosition {
@@ -261,7 +302,7 @@ pub async fn handle_packet(
                     buf.write_u8(pos.glow);
                     buf.write_bytes(&pos.icon_ids);
 
-                    out.push(buf);
+                    state.send_to(&client_id, buf.as_bytes()).await?;
                 }
             }
         }
@@ -270,14 +311,14 @@ pub async fn handle_packet(
         }
     }
 
-    Ok(out)
+    Ok(())
 }
 
 pub async fn gdm_server(port: &str) -> anyhow::Result<()> {
     let addr = format!("0.0.0.0:{}", port);
     let socket = Arc::new(UdpSocket::bind(&addr).await?);
 
-    let state = Arc::new(Mutex::new(State::new()));
+    let state = Arc::new(Mutex::new(State::new(socket.clone())));
 
     info!("GDM (UDP) server listening on: {}", addr);
 
@@ -286,18 +327,9 @@ pub async fn gdm_server(port: &str) -> anyhow::Result<()> {
     loop {
         let (len, peer) = socket.recv_from(&mut buf).await?;
         let cloned_state = state.clone();
-        let cloned_socket = socket.clone();
         tokio::spawn(async move {
-            match handle_packet(cloned_state, &buf, len).await {
-                Err(e) => error!("remote err from {peer}: {e}"),
-                Ok(bytebufs) => {
-                    for bytebuf in bytebufs {
-                        let res = cloned_socket.send_to(bytebuf.as_bytes(), peer).await;
-                        if res.is_err() {
-                            error!("error sending data to {peer}: {:?}", res);
-                        }
-                    }
-                }
+            if let Err(e) = handle_packet(cloned_state, &buf[..len], peer).await {
+                error!("remote err from {peer}: {e}");
             }
         });
     }
