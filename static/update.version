@@ -1,0 +1,23 @@
+{
+   "version": 1.0,
+   "link": "http://example.com",
+   "desc": "open-gdm-server by dank_meme",
+   "caching" : true,
+   "android_animated_gif" : false,
+   "android_refresh_rate" : 30,
+   "windows_refresh_rate" : 16,
+   "cache_of_death" : false,
+   "hard_cache" : true,
+   "cache_level" : 5,
+   "cache_hours_life" : 48,
+   "assets_refresh" : 5000,
+   "refresh_assets" : true,
+   "chinese_server" : false,
+   "europe_server" : true,
+   "asia_east_server" : false,
+   "asia_southeast_server" : false,
+   "america_north_server" : false,
+   "america_south_server" : false,
+   "android_client" : true,
+   "windows_client" : true
+}
