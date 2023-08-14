@@ -239,7 +239,7 @@ pub async fn handle_packet(
                     buf.write_i32(pos.p1_pos.0);
                     buf.write_i32(pos.p1_pos.1);
                     buf.write_i32(pos.p1_rot.0);
-                    buf.write_i32(pos.p1_pos.1);
+                    buf.write_i32(pos.p1_rot.1);
                     buf.write_u8(pos.p1_gamemode);
                     buf.write_u8(pos.p1_icon);
                     buf.write_i32(pos.p1_size);
@@ -248,7 +248,7 @@ pub async fn handle_packet(
                     buf.write_i32(pos.p2_pos.0);
                     buf.write_i32(pos.p2_pos.1);
                     buf.write_i32(pos.p2_rot.0);
-                    buf.write_i32(pos.p2_pos.1);
+                    buf.write_i32(pos.p2_rot.1);
                     buf.write_u8(pos.p2_gamemode);
                     buf.write_u8(pos.p2_icon);
                     buf.write_i32(pos.p2_size);
