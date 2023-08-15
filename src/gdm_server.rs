@@ -91,6 +91,7 @@ pub struct State {
     levels: HashMap<i32, HashMap<i32, PlayerPosition>>,
     server_socket: Arc<UdpSocket>,
     client_to_addr: HashMap<i32, SocketAddr>,
+    user_keys: HashMap<i32, u32>,
 }
 
 impl State {
@@ -99,12 +100,13 @@ impl State {
             levels: HashMap::new(),
             server_socket,
             client_to_addr: HashMap::new(),
+            user_keys: HashMap::new(),
         }
     }
 
     pub fn left_level(&mut self, user: &i32) -> Vec<i32> {
         // returns users to notify about exit
-        
+
         let mut users_in_level = vec![];
         // remove from existing levels, if applicable
         for (level_id, level_players) in self.levels.iter_mut() {
@@ -122,8 +124,15 @@ impl State {
         users_in_level
     }
 
-    pub async fn notify_clients(&self, clients: &Vec<i32>, client_left: &i32) -> anyhow::Result<()> {
-        debug!("notifying {} clients that {client_left} left", clients.len());
+    pub async fn notify_clients(
+        &self,
+        clients: &Vec<i32>,
+        client_left: &i32,
+    ) -> anyhow::Result<()> {
+        debug!(
+            "notifying {} clients that {client_left} left",
+            clients.len()
+        );
         for client_id in clients.iter() {
             let mut buf = ByteBuffer::new();
             buf.write_i8(Prefixes::PlayerDisconnect.to_number());
@@ -132,7 +141,7 @@ impl State {
         }
         Ok(())
     }
-    
+
     pub async fn send_to(&self, client_id: &i32, data: &[u8]) -> anyhow::Result<usize> {
         let addr = self.client_to_addr.get(client_id);
         if addr.is_none() {
@@ -153,7 +162,7 @@ pub async fn handle_packet(
     let prefix = Prefixes::from_number(bytebuffer.read_i8()?).ok_or(anyhow!("invalid prefix"))?;
 
     let client_id = bytebuffer.read_i32()?;
-    let _user_key = bytebuffer.read_u32()?;
+    let user_key = bytebuffer.read_u32()?;
 
     match prefix {
         Prefixes::Disconnect => {
@@ -161,11 +170,14 @@ pub async fn handle_packet(
             let mut state = state.lock().await;
             let clients = state.left_level(&client_id);
             state.notify_clients(&clients, &client_id).await?;
+            state.client_to_addr.remove(&client_id);
+            state.user_keys.remove(&client_id);
         }
         Prefixes::Hello => {
             debug!("remote sent Prefixes::Hello");
             let mut state = state.lock().await;
             state.client_to_addr.insert(client_id, address);
+            state.user_keys.insert(client_id, user_key);
 
             let mut buf = ByteBuffer::new();
             buf.write_i8(Prefixes::AckHello.to_number());
@@ -191,10 +203,32 @@ pub async fn handle_packet(
         Prefixes::OutsideLevel => {
             debug!("remote sent Prefixes::OutsideLevel");
             let mut state = state.lock().await;
+            let correct_key = state.user_keys.get(&client_id).unwrap_or(&0u32);
+            if *correct_key != user_key {
+                warn!(
+                    "client {client_id} wrong key, expected {correct_key}, client sent {user_key}"
+                );
+                let mut buf = ByteBuffer::new();
+                buf.write_i8(Prefixes::Disconnect.to_number());
+                state.send_to(&client_id, buf.as_bytes()).await?;
+                return Ok(());
+            }
+
             let clients = state.left_level(&client_id);
             state.notify_clients(&clients, &client_id).await?;
         }
         Prefixes::Message => {
+            let mut state = state.lock().await;
+            let correct_key = state.user_keys.get(&client_id).unwrap_or(&0u32);
+            if *correct_key != user_key {
+                warn!(
+                    "client {client_id} wrong key, expected {correct_key}, client sent {user_key}"
+                );
+                let mut buf = ByteBuffer::new();
+                buf.write_i8(Prefixes::Disconnect.to_number());
+                state.send_to(&client_id, buf.as_bytes()).await?;
+                return Ok(());
+            }
             let p1_xpos = bytebuffer.read_i32()?;
             let p1_ypos = bytebuffer.read_i32()?;
             let p1_xrot = bytebuffer.read_i32()?;
@@ -224,11 +258,9 @@ pub async fn handle_packet(
             let icon_ids = bytebuffer.read_bytes(7)?;
 
             if level_id == -1 {
-                let mut state = state.lock().await;
                 let clients = state.left_level(&client_id);
                 state.notify_clients(&clients, &client_id).await?;
             } else {
-                let mut state = state.lock().await;
                 let level = state.levels.entry(level_id).or_insert_with(HashMap::new);
 
                 let pos_entry = PlayerPosition {
