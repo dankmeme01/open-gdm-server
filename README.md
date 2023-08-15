@@ -10,9 +10,16 @@ Also, I love how I got to do this project not 2 years ago, but 2 months before 2
 
 ## How to connect
 
-GDM does not officially support custom server endpoints, and you will have to modify the source code and compile it yourself with the proper endpoints.
+GDM does not officially support custom server endpoints. You either have to use an [OpenGDM client](https://github.com/dankmeme01/open-gdm-client), or modify the source code and compile GDM yourself (see below).
 
-For each of those places, change the IP address or the hostname to `127.0.0.1:53789`, for example `http://1.1.1.1/gdm/getIcon.php` or `http://example.com/gdm/getIcon.php` becomes `http://127.0.0.1:53789/gdm/getIcon.php`. Make sure to replace `127.0.0.1` to the server IP and `53789` to the HTTP port of the OpenGDM server:
+## Potential future plans
+
+* Implement `getIcon.php` ourselves
+* Figure out why the level list is broken on the client
+
+## How to make a compatible client
+
+For each of the following places, change the IP address or the hostname to `127.0.0.1:53789`, for example `http://1.1.1.1/gdm/getIcon.php` or `http://example.com/gdm/getIcon.php` becomes `http://127.0.0.1:53789/gdm/getIcon.php`. Make sure to replace `127.0.0.1` to the server IP and `53789` to the HTTP port of the OpenGDM server:
 
 * GDM/Client/Client.cs line 343
 * GDM/Client/Client.cs line 395
@@ -31,8 +38,3 @@ Then, change the file at GDM/Globals/Global Data.cs line 35, set the `StandardPo
 Additionally, I would recommend to switch the .NET version to 4.8, as I've had issues with both 4.6.1 and 4.6.2.
 
 After those changes, you should be able to compile GDM successfully, and it should point to your server.
-
-## Potential future plans
-
-* Implement `getIcon.php` ourselves
-* Figure out why the level list is broken on the client
