@@ -1,8 +1,7 @@
-#[macro_use]
-extern crate rocket;
-use std::env;
+use std::{env, error::Error};
 
-use log::LevelFilter;
+use log::{error, info, LevelFilter};
+use roa::{tcp::Listener, App};
 use util::Logger;
 
 mod gdm_routes;
@@ -11,8 +10,8 @@ mod util;
 
 static LOGGER: Logger = Logger;
 
-#[rocket::main]
-async fn main() -> Result<(), rocket::Error> {
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn Error>> {
     log::set_logger(&LOGGER)
         .map(|()| {
             log::set_max_level(if cfg!(debug_assertions) {
@@ -23,9 +22,14 @@ async fn main() -> Result<(), rocket::Error> {
         })
         .unwrap();
 
-    let handle = tokio::spawn(async {
+    let bind_addr = env::var("BIND_ADDRESS").unwrap_or("0.0.0.0".to_string());
+    let bind_addr_clone = bind_addr.clone();
+
+    let http_port = env::var("HTTP_PORT").unwrap_or("53789".to_string());
+
+    let handle = tokio::spawn(async move {
         let gdm_port = env::var("GDM_PORT").unwrap_or("53790".to_string());
-        if let Err(e) = gdm_server::gdm_server(&gdm_port).await {
+        if let Err(e) = gdm_server::gdm_server(&bind_addr_clone, &gdm_port).await {
             error!("Error in the server: {}", e);
         }
     });
@@ -33,10 +37,13 @@ async fn main() -> Result<(), rocket::Error> {
     let boxed = Box::new(handle);
     Box::leak(boxed);
 
-    let _rocket = rocket::build()
-        .mount("/gdm/", gdm_routes::build_routes())
-        .launch()
-        .await?;
+    let gdm_router = gdm_routes::build_router();
+    let app = App::new().end(gdm_router.routes("/gdm")?);
+
+    app.listen(format!("{bind_addr}:{http_port}"), |addr| {
+        info!("HTTP server listening on: {addr}");
+    })?
+    .await?;
 
     Ok(())
 }

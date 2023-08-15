@@ -4,7 +4,7 @@ A server for [Geometry Dash Multiplayer](https://github.com/AlizerUncaged/GDM-Wi
 
 The server can be easily self-hosted, and does not implement VIP checks, VIP features like rainbow colors, or private rooms. It also doesn't implement icon generation, and the `getIcon.php` endpoint acts as a proxy to the actual GDM server. However, the rest of the functionality is intact.
 
-By default, the server is bound to `0.0.0.0`, port 53789 for HTTP, and 53790 for the GDM protocol. The environment variable `GDM_PORT` can be used to change the GDM port, and the `Rocket.toml` file can be edited to change the HTTP port.
+By default, the server is bound to `0.0.0.0` (all addresses), port 53789 for HTTP, and 53790 for the GDM protocol. Those all can be changed with environment variables `BIND_ADDRESS`, `HTTP_PORT` and `GDM_PORT`
 
 Also, I love how I got to do this project not 2 years ago, but 2 months before 2.2 comes out and this becomes completely useless just as everything else I ever do :D
 

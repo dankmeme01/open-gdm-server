@@ -3,7 +3,7 @@ use std::net::SocketAddr;
 
 use anyhow::anyhow;
 use bytebuffer::{ByteBuffer, ByteReader};
-use log::{debug, info, warn};
+use log::{debug, error, info, warn};
 use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tokio::sync::Mutex;
@@ -112,7 +112,7 @@ impl State {
         for (level_id, level_players) in self.levels.iter_mut() {
             if level_players.contains_key(user) {
                 level_players.remove(user);
-                users_in_level.extend(level_players.keys().map(|elem| *elem).collect::<Vec<i32>>());
+                users_in_level.extend(level_players.keys().copied().collect::<Vec<i32>>());
                 debug!("{user} left the level {level_id}");
                 break;
             }
@@ -229,6 +229,7 @@ pub async fn handle_packet(
                 state.send_to(&client_id, buf.as_bytes()).await?;
                 return Ok(());
             }
+
             let p1_xpos = bytebuffer.read_i32()?;
             let p1_ypos = bytebuffer.read_i32()?;
             let p1_xrot = bytebuffer.read_i32()?;
@@ -288,10 +289,8 @@ pub async fn handle_packet(
                     icon_ids,
                 };
 
-                if cfg!(debug_assertions) {
-                    if !level.contains_key(&client_id) {
-                        debug!("{client_id} join the level {level_id}");
-                    }
+                if cfg!(debug_assertions) && !level.contains_key(&client_id) {
+                    debug!("{client_id} join the level {level_id}");
                 }
 
                 level.insert(client_id, pos_entry);
@@ -346,13 +345,13 @@ pub async fn handle_packet(
     Ok(())
 }
 
-pub async fn gdm_server(port: &str) -> anyhow::Result<()> {
-    let addr = format!("0.0.0.0:{}", port);
+pub async fn gdm_server(addr: &str, port: &str) -> anyhow::Result<()> {
+    let addr = format!("{addr}:{port}");
     let socket = Arc::new(UdpSocket::bind(&addr).await?);
 
     let state = Arc::new(Mutex::new(State::new(socket.clone())));
 
-    info!("GDM (UDP) server listening on: {}", addr);
+    info!("GDM (UDP) server listening on: {addr}");
 
     let mut buf = [0u8; 4096];
 

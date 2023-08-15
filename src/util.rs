@@ -1,8 +1,12 @@
-use chrono::Local;
+use std::time::SystemTime;
+
 use colored::Colorize;
 use log::Level;
+use time::{format_description, OffsetDateTime};
 
 pub struct Logger;
+
+const TIME_FORMAT: &str = "[year]-[month]-[day] [hour]:[minute]:[second].[subsecond digits:3]";
 
 impl log::Log for Logger {
     fn enabled(&self, metadata: &log::Metadata) -> bool {
@@ -16,9 +20,11 @@ impl log::Log for Logger {
     }
 
     fn log(&self, record: &log::Record) {
-        let time = Local::now();
-        let formatted_time = time.format("%Y-%m-%d %H:%M:%S%.3f");
         if self.enabled(record.metadata()) {
+            let now: OffsetDateTime = SystemTime::now().into();
+            let format_desc = format_description::parse(TIME_FORMAT).unwrap();
+            let formatted_time = now.format(&format_desc).unwrap();
+
             let (level, args) = match record.level() {
                 Level::Error => (
                     record.level().to_string().bright_red(),
@@ -42,12 +48,7 @@ impl log::Log for Logger {
                 ),
             };
 
-            println!(
-                "[{}] [{}] - {}",
-                formatted_time,
-                level,
-                args,
-            )
+            println!("[{}] [{}] - {}", formatted_time, level, args,)
         }
     }
 
