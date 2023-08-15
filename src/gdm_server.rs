@@ -1,10 +1,10 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::time::{SystemTime, Duration};
+use std::time::{Duration, SystemTime};
 
 use anyhow::anyhow;
 use bytebuffer::{ByteBuffer, ByteReader, Endian};
-use log::{debug, error, info, warn};
+use log::{debug, info, warn};
 use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tokio::sync::Mutex;
@@ -91,7 +91,7 @@ pub struct PlayerPosition {
 pub struct State {
     levels: HashMap<i32, HashMap<i32, PlayerPosition>>,
     server_socket: Arc<UdpSocket>,
-    connected_clients: HashMap<i32, (SocketAddr, u32, SystemTime)> // client_id : address, user key, timestamp of last ping
+    connected_clients: HashMap<i32, (SocketAddr, u32, SystemTime)>, // client_id : address, user key, timestamp of last ping
 }
 
 impl State {
@@ -99,7 +99,7 @@ impl State {
         State {
             levels: HashMap::new(),
             server_socket,
-            connected_clients: HashMap::new()
+            connected_clients: HashMap::new(),
         }
     }
 
@@ -155,7 +155,9 @@ impl State {
     pub async fn remove_dead_clients(&mut self) {
         let now = SystemTime::now();
         self.connected_clients.retain(|_, client| {
-            let elapsed = now.duration_since(client.2).unwrap_or_else(|_| Duration::from_secs(0));
+            let elapsed = now
+                .duration_since(client.2)
+                .unwrap_or_else(|_| Duration::from_secs(0));
             elapsed < Duration::from_secs(60)
         });
     }
@@ -195,7 +197,9 @@ pub async fn handle_packet(
         Prefixes::Hello => {
             debug!("remote sent Prefixes::Hello");
             let mut state = state.lock().await;
-            state.connected_clients.insert(client_id, (address, user_key, timestamp()));
+            state
+                .connected_clients
+                .insert(client_id, (address, user_key, timestamp()));
 
             let mut buf = ByteBuffer::new();
             buf.write_i8(Prefixes::AckHello.to_number());
