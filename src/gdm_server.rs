@@ -401,7 +401,7 @@ pub async fn gdm_server(addr: &str, port: &str) -> anyhow::Result<()> {
         let cloned_state = state.clone();
         tokio::spawn(async move {
             if let Err(e) = handle_packet(cloned_state, &buf[..len], peer).await {
-                error!("remote err from {peer}: {e}");
+                warn!("remote err from {peer}: {e}");
             }
         });
     }
