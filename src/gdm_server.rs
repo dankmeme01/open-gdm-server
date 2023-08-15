@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::time::{SystemTime, Duration};
 
 use anyhow::anyhow;
-use bytebuffer::{ByteBuffer, ByteReader};
+use bytebuffer::{ByteBuffer, ByteReader, Endian};
 use log::{debug, error, info, warn};
 use std::sync::Arc;
 use tokio::net::UdpSocket;
@@ -90,8 +91,7 @@ pub struct PlayerPosition {
 pub struct State {
     levels: HashMap<i32, HashMap<i32, PlayerPosition>>,
     server_socket: Arc<UdpSocket>,
-    client_to_addr: HashMap<i32, SocketAddr>,
-    user_keys: HashMap<i32, u32>,
+    connected_clients: HashMap<i32, (SocketAddr, u32, SystemTime)> // client_id : address, user key, timestamp of last ping
 }
 
 impl State {
@@ -99,8 +99,7 @@ impl State {
         State {
             levels: HashMap::new(),
             server_socket,
-            client_to_addr: HashMap::new(),
-            user_keys: HashMap::new(),
+            connected_clients: HashMap::new()
         }
     }
 
@@ -135,6 +134,7 @@ impl State {
         );
         for client_id in clients.iter() {
             let mut buf = ByteBuffer::new();
+            buf.set_endian(Endian::LittleEndian);
             buf.write_i8(Prefixes::PlayerDisconnect.to_number());
             buf.write_i32(*client_left);
             self.send_to(client_id, buf.as_bytes()).await?;
@@ -143,14 +143,32 @@ impl State {
     }
 
     pub async fn send_to(&self, client_id: &i32, data: &[u8]) -> anyhow::Result<usize> {
-        let addr = self.client_to_addr.get(client_id);
-        if addr.is_none() {
-            return Err(anyhow!("Address not found"));
+        let client = self.connected_clients.get(client_id);
+        if client.is_none() {
+            return Err(anyhow!("Client not found by id {client_id}"));
         }
 
-        let addr = addr.unwrap();
-        Ok(self.server_socket.send_to(data, addr).await?)
+        let client = client.unwrap();
+        Ok(self.server_socket.send_to(data, client.0).await?)
     }
+
+    pub async fn remove_dead_clients(&mut self) {
+        let now = SystemTime::now();
+        self.connected_clients.retain(|_, client| {
+            let elapsed = now.duration_since(client.2).unwrap_or_else(|_| Duration::from_secs(0));
+            elapsed < Duration::from_secs(60)
+        });
+    }
+
+    pub async fn update_client_time(&mut self, client_id: &i32) {
+        if let Some(client) = self.connected_clients.get_mut(client_id) {
+            client.2 = timestamp();
+        }
+    }
+}
+
+fn timestamp() -> SystemTime {
+    SystemTime::now()
 }
 
 pub async fn handle_packet(
@@ -159,6 +177,8 @@ pub async fn handle_packet(
     address: SocketAddr,
 ) -> anyhow::Result<()> {
     let mut bytebuffer = ByteReader::from_bytes(buf);
+    bytebuffer.set_endian(Endian::LittleEndian);
+
     let prefix = Prefixes::from_number(bytebuffer.read_i8()?).ok_or(anyhow!("invalid prefix"))?;
 
     let client_id = bytebuffer.read_i32()?;
@@ -170,14 +190,12 @@ pub async fn handle_packet(
             let mut state = state.lock().await;
             let clients = state.left_level(&client_id);
             state.notify_clients(&clients, &client_id).await?;
-            state.client_to_addr.remove(&client_id);
-            state.user_keys.remove(&client_id);
+            state.connected_clients.remove(&client_id);
         }
         Prefixes::Hello => {
             debug!("remote sent Prefixes::Hello");
             let mut state = state.lock().await;
-            state.client_to_addr.insert(client_id, address);
-            state.user_keys.insert(client_id, user_key);
+            state.connected_clients.insert(client_id, (address, user_key, timestamp()));
 
             let mut buf = ByteBuffer::new();
             buf.write_i8(Prefixes::AckHello.to_number());
@@ -187,12 +205,16 @@ pub async fn handle_packet(
             let res = bytebuffer.read_bytes(20);
             if res.is_ok() {
                 let mut buf = ByteBuffer::new();
+                buf.set_endian(Endian::LittleEndian);
                 buf.write_i8(Prefixes::Ping.to_number());
-                buf.write_i32(0i32); // Online player count, unused
-                let state = state.lock().await;
+
+                let mut state = state.lock().await;
+                state.update_client_time(&client_id).await;
+
+                buf.write_i32(state.connected_clients.len() as i32); // Online player count
                 state.send_to(&client_id, buf.as_bytes()).await?;
             } else {
-                debug!("unhandled, got GetIcon or CreateLobby");
+                warn!("unhandled, got GetIcon or CreateLobby");
                 // this never happens..?
                 // handle GetIcon
                 // CreateLobby can be passed too, but unimplemented
@@ -203,13 +225,16 @@ pub async fn handle_packet(
         Prefixes::OutsideLevel => {
             debug!("remote sent Prefixes::OutsideLevel");
             let mut state = state.lock().await;
-            let correct_key = state.user_keys.get(&client_id).unwrap_or(&0u32);
-            if *correct_key != user_key {
+            let client = state.connected_clients.get(&client_id);
+            let correct_key = client.map(|client| client.1).unwrap_or(0u32);
+
+            if correct_key != user_key {
                 warn!(
                     "client {client_id} wrong key, expected {correct_key}, client sent {user_key}"
                 );
                 let mut buf = ByteBuffer::new();
                 buf.write_i8(Prefixes::Disconnect.to_number());
+                buf.write_bytes("unauthorized".as_bytes());
                 state.send_to(&client_id, buf.as_bytes()).await?;
                 return Ok(());
             }
@@ -219,13 +244,16 @@ pub async fn handle_packet(
         }
         Prefixes::Message => {
             let mut state = state.lock().await;
-            let correct_key = state.user_keys.get(&client_id).unwrap_or(&0u32);
-            if *correct_key != user_key {
+            let client = state.connected_clients.get(&client_id);
+            let correct_key = client.map(|client| client.1).unwrap_or(0u32);
+
+            if correct_key != user_key {
                 warn!(
                     "client {client_id} wrong key, expected {correct_key}, client sent {user_key}"
                 );
                 let mut buf = ByteBuffer::new();
                 buf.write_i8(Prefixes::Disconnect.to_number());
+                buf.write_bytes("unauthorized".as_bytes());
                 state.send_to(&client_id, buf.as_bytes()).await?;
                 return Ok(());
             }
@@ -305,6 +333,7 @@ pub async fn handle_packet(
                     }
 
                     let mut buf = ByteBuffer::new();
+                    buf.set_endian(Endian::LittleEndian);
                     buf.write_i8(Prefixes::Message.to_number());
 
                     buf.write_i32(*player_id);
@@ -354,6 +383,18 @@ pub async fn gdm_server(addr: &str, port: &str) -> anyhow::Result<()> {
     info!("GDM (UDP) server listening on: {addr}");
 
     let mut buf = [0u8; 4096];
+
+    let state_cloned = state.clone();
+    let _handle = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(30));
+        interval.tick().await;
+        loop {
+            interval.tick().await;
+            let mut state = state_cloned.lock().await;
+            debug!("removing dead clients");
+            state.remove_dead_clients().await;
+        }
+    });
 
     loop {
         let (len, peer) = socket.recv_from(&mut buf).await?;
