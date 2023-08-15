@@ -24,7 +24,6 @@ For each of the following places, change the IP address or the hostname to `127.
 * GDM/Client/Client.cs line 343
 * GDM/Client/Client.cs line 395
 * GDM/Globals/Endpoints.cs line 16
-* GDM/Globals/Global Data.cs line 37 (remove the 2nd server, keep just 1 with your IP)
 * GDM/Globals/Global Data.cs line 45
 * GDM/Initialize.cs line 167
 * GDM/Initialize.cs line 738
@@ -33,7 +32,10 @@ For each of the following places, change the IP address or the hostname to `127.
 * Utilities/TCP.cs line 94
 * Utilities/TCP.cs line 146
 
-Then, change the file at GDM/Globals/Global Data.cs line 35, set the `StandardPort` variable to your GDM port of the OpenGDM server.
+Then, change those two lines:
+
+* GDM/Globals/Global Data.cs line 35, set the `StandardPort` variable to your GDM port of the OpenGDM server.
+* GDM/Globals/Global Data.cs line 37, remove the 2nd server and keep only one with your IP (without the port, just the IP address)
 
 Additionally, I would recommend to switch the .NET version to 4.8, as I've had issues with both 4.6.1 and 4.6.2.
 
