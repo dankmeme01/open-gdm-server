@@ -10,13 +10,15 @@ use roa::{
 };
 use tokio::{fs::File, net::TcpStream};
 
-pub async fn version(context: &mut Context) -> roa::Result {
+use crate::state::TSState;
+
+pub async fn version(context: &mut Context<TSState>) -> roa::Result {
     let file = File::open("static/update.version").await?;
     context.write_reader(file);
     Ok(())
 }
 
-pub async fn is_vip(context: &mut Context) -> roa::Result {
+pub async fn is_vip(context: &mut Context<TSState>) -> roa::Result {
     if cfg!(debug_assertions) {
         let id = &*context.must_query("id")?;
         let cv = context.query("cv");
@@ -29,12 +31,12 @@ pub async fn is_vip(context: &mut Context) -> roa::Result {
     Ok(())
 }
 
-pub async fn is_rainbow(context: &mut Context) -> roa::Result {
+pub async fn is_rainbow(context: &mut Context<TSState>) -> roa::Result {
     context.write(r##"{"israinbow":false,"israinbowpastel":false,"hexcolor":"#ffffff"}"##);
     Ok(())
 }
 
-pub async fn get_info(context: &mut Context) -> roa::Result {
+pub async fn get_info(context: &mut Context<TSState>) -> roa::Result {
     if cfg!(debug_assertions) {
         let id = &*context.must_query("id")?;
         let iid = context.query("iid");
@@ -47,7 +49,7 @@ pub async fn get_info(context: &mut Context) -> roa::Result {
 }
 
 #[allow(non_snake_case)]
-pub async fn get_icon(context: &mut Context) -> roa::Result {
+pub async fn get_icon(context: &mut Context<TSState>) -> roa::Result {
     let form = &*context.must_query("form")?;
     let col1 = &*context.must_query("col1")?;
     let col2 = &*context.must_query("col2")?;
@@ -100,14 +102,31 @@ pub async fn get_icon(context: &mut Context) -> roa::Result {
     Ok(())
 }
 
-pub async fn lobbies(context: &mut Context) -> roa::Result {
-    let fname = context.must_param("file")?;
-    warn!("/lobbies/{fname:?} accessed, is unimplemented!");
+pub async fn lobbies(context: &mut Context<TSState>) -> roa::Result {
+    let fname = &*context.must_param("file")?;
+    let lobby_id = fname.split_once(".json").map(|(x, _)| x).unwrap_or("0");
 
-    Err(status!(StatusCode::BAD_REQUEST))
+    if lobby_id != "0" {
+        return Err(status!(StatusCode::BAD_REQUEST));
+    }
+
+    let state = context.lock().await;
+    let levels: Vec<_> = state.levels.iter().map(|(id, players)| {
+        format!(r#""{}":{{"Players":{}}}"#, id, players.len())
+    }).collect();
+    drop(state);
+
+    let mut outer_json = "{\"levels\":{".to_string();
+
+    outer_json.push_str(&levels.join(","));
+    outer_json.push_str("}}");
+
+    context.write(outer_json);
+    
+    Ok(())
 }
 
-pub fn build_router() -> Router<()> {
+pub fn build_router() -> Router<TSState> {
     Router::new()
         .gate(roa::query::query_parser)
         .on("/update.version", get(version))

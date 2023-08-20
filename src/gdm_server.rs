@@ -6,11 +6,11 @@ use anyhow::anyhow;
 use bytebuffer::{ByteBuffer, ByteReader, Endian};
 use log::{debug, info, warn};
 use std::sync::Arc;
-use tokio::net::UdpSocket;
 use tokio::sync::Mutex;
+use crate::state::State;
 
 #[derive(Debug)]
-enum Prefixes {
+pub enum Prefixes {
     Hello = 0x3,
     Ping = 0x0,
     Message = 0x1,
@@ -26,7 +26,7 @@ enum Prefixes {
 }
 
 impl Prefixes {
-    fn from_number(value: i8) -> Option<Self> {
+    pub fn from_number(value: i8) -> Option<Self> {
         match value {
             0 => Some(Prefixes::Ping),
             1 => Some(Prefixes::Message),
@@ -44,7 +44,7 @@ impl Prefixes {
         }
     }
 
-    fn to_number(&self) -> i8 {
+    pub fn to_number(&self) -> i8 {
         match self {
             Prefixes::AckHello => 0x4,
             Prefixes::BadKey => 0x12,
@@ -88,91 +88,6 @@ pub struct PlayerPosition {
     icon_ids: Vec<u8>,
 }
 
-pub struct State {
-    levels: HashMap<i32, HashMap<i32, PlayerPosition>>,
-    server_socket: Arc<UdpSocket>,
-    connected_clients: HashMap<i32, (SocketAddr, u32, SystemTime)>, // client_id : address, user key, timestamp of last ping
-}
-
-impl State {
-    pub fn new(server_socket: Arc<UdpSocket>) -> Self {
-        State {
-            levels: HashMap::new(),
-            server_socket,
-            connected_clients: HashMap::new(),
-        }
-    }
-
-    pub fn left_level(&mut self, user: &i32) -> Vec<i32> {
-        // returns users to notify about exit
-
-        let mut users_in_level = vec![];
-        // remove from existing levels, if applicable
-        for (level_id, level_players) in self.levels.iter_mut() {
-            if level_players.contains_key(user) {
-                level_players.remove(user);
-                users_in_level.extend(level_players.keys().copied().collect::<Vec<i32>>());
-                debug!("{user} left the level {level_id}");
-                break;
-            }
-        }
-
-        // remove levels with 0 players
-        self.levels.retain(|_, v| !v.is_empty());
-
-        users_in_level
-    }
-
-    pub async fn notify_clients(
-        &self,
-        clients: &Vec<i32>,
-        client_left: &i32,
-    ) -> anyhow::Result<()> {
-        debug!(
-            "notifying {} clients that {client_left} left",
-            clients.len()
-        );
-        for client_id in clients.iter() {
-            let mut buf = ByteBuffer::new();
-            buf.set_endian(Endian::LittleEndian);
-            buf.write_i8(Prefixes::PlayerDisconnect.to_number());
-            buf.write_i32(*client_left);
-            self.send_to(client_id, buf.as_bytes()).await?;
-        }
-        Ok(())
-    }
-
-    pub async fn send_to(&self, client_id: &i32, data: &[u8]) -> anyhow::Result<usize> {
-        let client = self.connected_clients.get(client_id);
-        if client.is_none() {
-            return Err(anyhow!("Client not found by id {client_id}"));
-        }
-
-        let client = client.unwrap();
-        Ok(self.server_socket.send_to(data, client.0).await?)
-    }
-
-    pub async fn remove_dead_clients(&mut self) {
-        let now = SystemTime::now();
-        self.connected_clients.retain(|_, client| {
-            let elapsed = now
-                .duration_since(client.2)
-                .unwrap_or_else(|_| Duration::from_secs(0));
-            elapsed < Duration::from_secs(60)
-        });
-    }
-
-    pub async fn update_client_time(&mut self, client_id: &i32) {
-        if let Some(client) = self.connected_clients.get_mut(client_id) {
-            client.2 = timestamp();
-        }
-    }
-}
-
-fn timestamp() -> SystemTime {
-    SystemTime::now()
-}
-
 pub async fn handle_packet(
     state: Arc<Mutex<State>>,
     buf: &[u8],
@@ -199,7 +114,7 @@ pub async fn handle_packet(
             let mut state = state.lock().await;
             state
                 .connected_clients
-                .insert(client_id, (address, user_key, timestamp()));
+                .insert(client_id, (address, user_key, SystemTime::now()));
 
             let mut buf = ByteBuffer::new();
             buf.write_i8(Prefixes::AckHello.to_number());
@@ -378,13 +293,13 @@ pub async fn handle_packet(
     Ok(())
 }
 
-pub async fn gdm_server(addr: &str, port: &str) -> anyhow::Result<()> {
-    let addr = format!("{addr}:{port}");
-    let socket = Arc::new(UdpSocket::bind(&addr).await?);
-
-    let state = Arc::new(Mutex::new(State::new(socket.clone())));
-
+pub async fn gdm_server(state: Arc<Mutex<State>>, addr: &str) -> anyhow::Result<()> {
     info!("GDM (UDP) server listening on: {addr}");
+
+    // get the server socket
+    let state_ = state.lock().await;
+    let socket = state_.server_socket.clone();
+    drop(state_);
 
     let mut buf = [0u8; 4096];
 

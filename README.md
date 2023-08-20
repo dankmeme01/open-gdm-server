@@ -15,7 +15,6 @@ GDM does not officially support custom server endpoints. You either have to use 
 ## Potential future plans
 
 * Implement `getIcon.php` ourselves
-* Figure out why the level list is broken on the client
 
 ## How to make a compatible client
 
